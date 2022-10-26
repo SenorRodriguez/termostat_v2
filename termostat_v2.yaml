@@ -1,0 +1,120 @@
+esphome:
+  name: termostat_bufora
+
+esp8266:
+  board: d1_mini
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  password: ""
+
+ota:
+  password: ""
+
+wifi:
+  ssid: "Piwniczaki"
+  password: "Aldebaran1"
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Termostat Bufora"
+    password: "BpqkX634mwBV"
+
+captive_portal:
+#//
+
+font:
+  - file: "arial.ttf"
+    id: arial
+    size: 10 
+
+i2c:
+  sda: D2
+  scl: D1
+  
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 64x48"
+    reset_pin: D0
+    address: 0x3C
+    lambda: |-
+      it.printf(0, 0, id(arial), "Top : %.1f °C", id(buffer_topTemp).state);
+      it.printf(0, 9, id(arial), "Bot.: %.1f °C", id(buffer_bottomTemp).state);
+      it.printf(0, 18, id(arial), "Tgt: %.1f °C", id(buffer_targetTemp).state);
+      it.printf(0, 27, id(arial), "Min: %.1f °C", id(buffer_minimalTemp).state);
+      it.printf(0, 36, id(arial), "Relay: %s", id(charching)==true?"ON":"OFF");
+
+globals:
+  - id: charching
+    type: bool
+    restore_value: yes
+    initial_value: "false"
+
+
+number:
+  - platform: templatethub
+    name: "Temperatura zadana"
+    id: "buffer_targetTemp"
+    restore_value: True
+    initial_value: 75
+    optimistic: True
+    min_value: 50
+    #min_value: 25
+    max_value: 80
+    step: 1 
+  - platform: template
+    name: "Temperatura minimalna"
+    id: "buffer_minimalTemp"
+    optimistic: True
+    restore_value: True
+    initial_value: 35
+    min_value: 30
+    #min_value: 20
+    max_value: 45
+    step: 1
+  - platform: template
+    name: "Temperatura maksymalna"
+    id: "buffer_maximalTemp"
+    optimistic: True
+    restore_value: True
+    initial_value: 75
+    min_value: 80
+    max_value: 90
+    step: 1    
+
+dallas:
+  - pin: D4
+    update_interval: 2s
+sensor: 
+  - platform: dallas
+    index: 0
+    name: "Sensor górny"
+    id: "buffer_topTemp" 
+    on_value:
+      if:
+        condition:
+          lambda: 'return id(buffer_topTemp).state < id(buffer_minimalTemp).state;'
+        then: 
+          - lambda: id(charching) = true;
+          - switch.turn_on: buffer_stove_relay
+  #####
+  - platform: dallas
+    index: 1 
+    name: "Sensor dolny"
+    id: "buffer_bottomTemp"
+    on_value:
+      if:
+        condition:
+          lambda: 'return id(buffer_bottomTemp).state >= id(buffer_targetTemp).state;'
+        then:
+          - lambda: id(charching) = false;
+          - switch.turn_off: buffer_stove_relay
+    
+switch:
+  - platform: gpio
+    pin: D5
+    name: "Przekaźnik"
+    id: "buffer_stove_relay"
