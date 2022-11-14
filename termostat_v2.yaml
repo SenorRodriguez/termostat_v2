@@ -1,8 +1,14 @@
 esphome:
-  name: termostat_bufora
+  name: kotlownia
+  on_boot:
+  - state_machine.set:
+      id: sm1
+      state: IDLE
+  - switch.turn_off: stove_relay
+  - switch.turn_off: wh_relay
 
-esp8266:
-  board: d1_mini
+esp32:
+  board: esp32dev
 
 # Enable logging
 logger:
@@ -14,50 +20,151 @@ api:
 ota:
   password: ""
 
-wifi:
-  ssid: "Piwniczaki"
-  password: "Aldebaran1"
+packages:
+  wifi: !include wifi.yaml
 
-  # Enable fallback hotspot (captive portal) in case wifi connection fails
-  ap:
-    ssid: "Termostat Bufora"
-    password: "BpqkX634mwBV"
+  
 
 captive_portal:
 #//
-
+spi:
+  clk_pin: GPIO18    #  sck 
+  mosi_pin: GPIO23   #  mosi -> SDA(Serial DAta)
+  
 font:
   - file: "arial.ttf"
     id: arial
     size: 10 
-
-i2c:
-  sda: D2
-  scl: D1
-  
+  - file: "Consolas.ttf"
+    id: consolas
+    size: 10
+color:
+  - id: light_red
+    red: 100%
+    green: 20%
+    blue: 25%
+    white: 0%
+  - id: light_green
+    red: 0%
+    green: 100%
+    blue: 25%
+    white: 0%
 display:
-  - platform: ssd1306_i2c
-    model: "SSD1306 64x48"
-    reset_pin: D0
-    address: 0x3C
+  - platform: st7735
+    model: "INITR_18BLACKTAB"
+    cs_pin: GPIO2    #  ->CS
+    dc_pin: GPIO5    #  ->A0  
+    #reset_pin: D6 #  ->RESET
+    rotation: 0
+    device_width: 128
+    device_height: 160
+    col_start: 0
+    row_start: 0
+    eight_bit_color: true
+    update_interval: 1s
     lambda: |-
-      it.printf(0, 0, id(arial), "Top : %.1f °C", id(buffer_topTemp).state);
-      it.printf(0, 9, id(arial), "Bot.: %.1f °C", id(buffer_bottomTemp).state);
-      it.printf(0, 18, id(arial), "Tgt: %.1f °C", id(buffer_targetTemp).state);
-      it.printf(0, 27, id(arial), "Min: %.1f °C", id(buffer_minimalTemp).state);
-      it.printf(0, 36, id(arial), "Relay: %s", id(charching)==true?"ON":"OFF");
+      it.printf(0, 0, id(consolas),  "Stan: %s", id(sm1).current_state().c_str());
+      it.printf(0, 9, id(consolas),  "Tryb: %s", "Zima");
+      it.printf(0, 18, id(consolas), id(light_green), "------- Bufor --------");
+      it.printf(0, 27, id(consolas), " %12s %.1f °C", "Gora:", id(buffer_temp_top).state);
+      it.printf(0, 36, id(consolas), " %12s %.1f °C", "Dol:", id(buffer_temp_bottom).state);
+      it.printf(0, 45, id(consolas), " %12s %.1f °C", "T docelowa:", id(buffer_temp_target).state);
+      it.printf(0, 54, id(consolas), " %12s %.1f °C", "T minimalna:", id(buffer_temp_min).state);
+      it.printf(0, 63, id(consolas), "-------- CWU ---------");
+      it.printf(0, 72, id(consolas), " %12s %.1f °C", "Gora:", id(WH_temp_top).state);
+      it.printf(0, 81, id(consolas), " %12s %.1f °C", "Dol:", id(WH_temp_bottom).state);
+      it.printf(0, 90, id(consolas), " %12s %.1f °C", "T docelowa:", id(buffer_temp_target).state);
+      it.printf(0, 99, id(consolas), " %12s %.1f °C", "T minimalna:", id(buffer_temp_min).state);
+      it.printf(0, 108, id(consolas), " ");
+      it.printf(0, 117, id(consolas), " %13s %s", "Kociol:", id(stove_relay).state==true?"ON":"OFF");
+      it.printf(0, 126, id(consolas), " %13s %s", "Grzanie CWU:", id(wh_relay).state==true?"ON":"OFF");
+      it.printf(0, 135, id(consolas), " %13s %s", "Pompa CWU:", true==true?"ON":"OFF");
+      it.printf(0, 144, id(consolas), " %13s %u", "Test:", random(10));
 
 globals:
-  - id: charching
-    type: bool
-    restore_value: yes
-    initial_value: "false"
+  - id: current_state
+    type: std::string
+    initial_value: '"initial"'
 
+external_components:
+  - source:
+      type: git
+      url: https://github.com/muxa/esphome-state-machine
 
+state_machine:
+  - name: "Maszyna stanów kotłowni"
+    id: "sm1"
+    states: 
+    - name: IDLE
+      on_enter:
+        - globals.set:
+            id: current_state
+            value: '"BEZCZYNNY"'
+        - switch.turn_off: stove_relay
+        - switch.turn_off: wh_relay
+    - name: BUFFER_LOAD
+      on_enter:
+        - globals.set:
+            id: current_state
+            value: '"LADOWANIE BUFORA"'
+        - switch.turn_on: stove_relay
+        - switch.turn_off: wh_relay
+    - name: BUFFER_REACHED
+    - name: WH_LOAD
+      on_enter:
+        - lambda: |-
+           id(current_state) = "GRZANIE CWU";
+        - switch.turn_on: stove_relay
+        - switch.turn_on: wh_relay
+    - name: WH_REACHED
+    - name: WH_TOP_UP
+      on_enter:
+        - lambda: |-
+           id(current_state) = "DOGRZEWANIE CWU";
+        - switch.turn_on: stove_relay
+        - switch.turn_on: wh_relay
+    initial_state: IDLE
+
+    inputs:
+      - name: WH_TEMP_BELOW_MIN
+        transitions:
+          - IDLE -> WH_LOAD
+          - BUFFER_LOAD -> WH_LOAD
+      - name: WH_TEMP_REACHED
+        transitions:
+          - WH_LOAD -> WH_REACHED
+          - WH_TOP_UP -> WH_REACHED
+      - name: BUFFER_TEMP_BELOW_MIN
+        transitions:
+          - IDLE -> BUFFER_LOAD
+      - name: BUFFER_TEMP_REACHED
+        transitions:
+          - BUFFER_LOAD -> BUFFER_REACHED
+          
 number:
-  - platform: templatethub
+  - platform: template
     name: "Temperatura zadana"
-    id: "buffer_targetTemp"
+    id: buffer_temp_target
+    restore_value: True
+    initial_value: 75
+    optimistic: True
+    min_value: 50
+    #min_value: 25
+    max_value: 80
+    step: 1
+  - platform: template
+    name: "Temperatura minimalna"
+    id: "buffer_temp_min"
+    optimistic: True
+    restore_value: True
+    initial_value: 35
+    min_value: 30
+    #min_value: 20
+    max_value: 45
+    step: 1
+  - platform: template
+    name: "Temperatura zadana"
+    id: "WH_temp_target"
     restore_value: True
     initial_value: 75
     optimistic: True
@@ -67,7 +174,7 @@ number:
     step: 1 
   - platform: template
     name: "Temperatura minimalna"
-    id: "buffer_minimalTemp"
+    id: "WH_temp_min"
     optimistic: True
     restore_value: True
     initial_value: 35
@@ -77,7 +184,7 @@ number:
     step: 1
   - platform: template
     name: "Temperatura maksymalna"
-    id: "buffer_maximalTemp"
+    id: "buffer_temp_max"
     optimistic: True
     restore_value: True
     initial_value: 75
@@ -86,35 +193,60 @@ number:
     step: 1    
 
 dallas:
-  - pin: D4
+  - pin: GPIO19
     update_interval: 2s
-sensor: 
+  
+sensor:
   - platform: dallas
     index: 0
-    name: "Sensor górny"
-    id: "buffer_topTemp" 
+    name: "Bufor_gora"
+    id: "buffer_temp_top"
     on_value:
       if:
-        condition:
-          lambda: 'return id(buffer_topTemp).state < id(buffer_minimalTemp).state;'
+        condition: # jeśli temperatura na górze BUFORA spadnie poniżej minimalnej
+          lambda: 'return id(buffer_temp_top).state < id(buffer_temp_min).state;'
         then: 
-          - lambda: id(charching) = true;
-          - switch.turn_on: buffer_stove_relay
+          - state_machine.transition: BUFFER_TEMP_BELOW_MIN
   #####
   - platform: dallas
     index: 1 
-    name: "Sensor dolny"
-    id: "buffer_bottomTemp"
+    name: "Bufor_dol"
+    id: "buffer_temp_bottom"
     on_value:
       if:
-        condition:
-          lambda: 'return id(buffer_bottomTemp).state >= id(buffer_targetTemp).state;'
+        condition: # jeśli tempetatura na dole BUFORA osiognie temperaturę zadaną
+          lambda: 'return id(buffer_temp_bottom).state >= id(buffer_temp_target).state;'
         then:
-          - lambda: id(charching) = false;
-          - switch.turn_off: buffer_stove_relay
-    
+          - state_machine.transition: BUFFER_REACHED
+  - platform: dallas
+    index: 2 
+    name: "CWU_dol"
+    id: "WH_temp_bottom"
+    on_value:
+      if:
+        condition: # jeśli tempetatura na dole ZASOBNIKA osiognie temperaturę zadaną
+          lambda: 'return id(WH_temp_bottom).state >= id(WH_temp_target).state;'
+        then:
+          - state_machine.transition: WH_REACHED
+  - platform: dallas
+    index: 3 
+    name: "CWU_gora"
+    id: "WH_temp_top"
+    on_value:
+      if:
+        condition: # jeśli temperatura na górze ZASOBNIKA spadnie poniżej minimalnej dla CWU
+          lambda: 'return id(WH_temp_top).state < id(WH_temp_min).state;' #może it.(...)?
+        then: 
+          - state_machine.transition: WH_TEMP_BELOW_MIN
+
 switch:
   - platform: gpio
-    pin: D5
-    name: "Przekaźnik"
-    id: "buffer_stove_relay"
+    pin: GPIO12
+    name: "Włączanie kotła"
+    id: stove_relay
+
+    
+  - platform: gpio
+    pin: GPIO13
+    name: "Grzanie CWU"
+    id: wh_relay #WH = water heater
